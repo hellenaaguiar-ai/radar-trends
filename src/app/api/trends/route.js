@@ -37,34 +37,77 @@ Formato recomendado: [Vídeo longo / Reel / Vídeo longo + Reel / Post reflexivo
 Timing: [Urgente / Evergreen / Evitar]`
 
 export async function POST(req) {
-  const apiKey = process.env.ANTHROPIC_API_KEY
-  if (!apiKey) {
-    return Response.json({ error: 'ANTHROPIC_API_KEY não configurada.' }, { status: 500 })
-  }
+  try {
+    const apiKey = process.env.ANTHROPIC_API_KEY
 
-  const { mode, topic } = await req.json()
-  const userMsg = mode === 'custom' ? CUSTOM_PROMPT(topic) : SEARCH_PROMPT
+    if (!apiKey) {
+      return Response.json(
+        { error: 'ANTHROPIC_API_KEY não configurada.' },
+        { status: 500 }
+      )
+    }
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-beta': 'interleaved-thinking-2025-05-14'
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1000,
-      system: BRAND_SYSTEM,
-      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-      messages: [{ role: 'user', content: userMsg }]
+    const { mode, topic } = await req.json()
+    const userMsg = mode === 'custom' ? CUSTOM_PROMPT(topic) : SEARCH_PROMPT
+
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        system: BRAND_SYSTEM,
+        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+        messages: [{ role: 'user', content: userMsg }]
+      })
     })
-  })
 
-  const data = await res.json()
-  if (data.error) return Response.json({ error: data.error.message }, { status: 500 })
+    const rawText = await res.text()
+    console.log('Anthropic status:', res.status)
+    console.log('Anthropic raw response:', rawText)
 
-  const text = data.content?.filter(b => b.type === 'text').map(b => b.text).join('') || ''
-  return Response.json({ text })
+    let data
+    try {
+      data = JSON.parse(rawText)
+    } catch {
+      return Response.json(
+        {
+          error: 'Resposta inválida do Anthropic.',
+          raw: rawText
+        },
+        { status: 500 }
+      )
+    }
+
+    if (!res.ok) {
+      return Response.json(
+        {
+          error: data?.error?.message || 'Erro ao consultar Anthropic.',
+          details: data
+        },
+        { status: res.status }
+      )
+    }
+
+    const text =
+      data.content
+        ?.filter((block) => block.type === 'text')
+        .map((block) => block.text)
+        .join('') || ''
+
+    return Response.json({ text })
+  } catch (error) {
+    console.error('Erro interno /api/trends:', error)
+
+    return Response.json(
+      {
+        error: error?.message || 'Erro interno ao analisar trends.'
+      },
+      { status: 500 }
+    )
+  }
 }
