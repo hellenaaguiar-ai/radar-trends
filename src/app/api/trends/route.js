@@ -20,42 +20,37 @@ Depois de pesquisar, analise cada tema pelo filtro da marca da Hellena e retorne
 
 **[TÍTULO DO TEMA]**
 Fit com a marca: [Alta / Média / Baixa]
-Ângulo sugerido: [Como ela abordaria de forma única — perspectiva específica, 2-3 frases]
+Ângulo sugerido: [Como ela abordaria de forma única - perspectiva específica, 2-3 frases]
 Formato recomendado: [Vídeo longo / Reel / Vídeo longo + Reel / Post reflexivo]
 Timing: [Urgente / Evergreen / Evitar]
 
 ---
 
-Retorne entre 6 e 8 temas. Seja honesto no fit — não force temas que não se encaixam.`
+Retorne entre 6 e 8 temas. Seja honesto no fit - não force temas que não se encaixam.`
 
-const CUSTOM_PROMPT = (topic: string) => `Pesquise na internet sobre o tema: "${topic}" — o que está sendo discutido sobre isso no Brasil agora, quem está falando, que perspectivas estão surgindo.
+const CUSTOM_PROMPT = (topic) => `Pesquise na internet sobre o tema: "${topic}" - o que está sendo discutido sobre isso no Brasil agora, quem está falando, que perspectivas estão surgindo.
 
 Depois analise pelo filtro da marca da Hellena Aguiar e retorne neste formato:
 
 **[TÍTULO DO TEMA]**
 Fit com a marca: [Alta / Média / Baixa]
-Ângulo sugerido: [Como ela abordaria de forma única — perspectiva específica, 2-3 frases]
+Ângulo sugerido: [Como ela abordaria de forma única - perspectiva específica, 2-3 frases]
 Formato recomendado: [Vídeo longo / Reel / Vídeo longo + Reel / Post reflexivo]
 Timing: [Urgente / Evergreen / Evitar]`
 
-// ─── HELPERS ──────────────────────────────────────────────
-
-function jsonResponse(body: unknown, status = 200) {
+function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'Content-Type': 'application/json; charset=utf-8' }
   })
 }
 
-// Parse defensivo — retorna null em vez de explodir se vier HTML ou texto cru
-function safeParse(text: string) {
+function safeParse(text) {
   try { return JSON.parse(text) }
   catch { return null }
 }
 
-// ─── POST ─────────────────────────────────────────────────
-
-export async function POST(req: Request) {
+export async function POST(req) {
   try {
     const apiKey = process.env.ANTHROPIC_API_KEY
 
@@ -63,7 +58,7 @@ export async function POST(req: Request) {
       return jsonResponse({ error: 'ANTHROPIC_API_KEY não configurada.' }, 500)
     }
 
-    let requestBody: { mode?: string; topic?: string } | null = null
+    let requestBody = null
     try {
       requestBody = await req.json()
     } catch {
@@ -81,93 +76,49 @@ export async function POST(req: Request) {
     }
 
     const userMsg = mode === 'custom'
-      ? CUSTOM_PROMPT(topic!.trim())
+      ? CUSTOM_PROMPT(topic.trim())
       : SEARCH_PROMPT
 
-    const anthropicPayload = {
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 1200,
-      system: BRAND_SYSTEM,
-      // ✅ versão atualizada do web search
-      tools: [{ type: 'web_search_20260209', name: 'web_search' }],
-      messages: [{ role: 'user', content: userMsg }]
-    }
-
-    // ✅ Timeout de 25s via AbortController
-    // Edge functions costumam ter limite de 30s — deixa margem pra resposta
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 25_000)
-
-    let res: Response
-    try {
-      res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        signal: controller.signal,
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey,
-          'anthropic-version': '2023-06-01'
-          // ✅ anthropic-beta removido — desnecessário e suspeito de incompatibilidade
-        },
-        body: JSON.stringify(anthropicPayload)
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1200,
+        system: BRAND_SYSTEM,
+        tools: [{ type: 'web_search_20260209', name: 'web_search' }],
+        messages: [{ role: 'user', content: userMsg }]
       })
-    } catch (fetchErr: unknown) {
-      const err = fetchErr as Error
-      const msg = err?.name === 'AbortError'
-        ? 'Timeout: a requisição demorou mais de 25s.'
-        : err?.message || 'Erro de rede ao contatar o Anthropic.'
-      return jsonResponse({ error: msg }, 502)
-    } finally {
-      clearTimeout(timer)
-    }
+    })
 
-    // ✅ Parse defensivo — não explode se vier HTML de gateway ou proxy
     const rawText = await res.text()
     const data = safeParse(rawText)
 
     if (!data) {
-      console.error('Anthropic retornou não-JSON:', rawText.slice(0, 300))
-      return jsonResponse(
-        {
-          error: 'Resposta inesperada do Anthropic (não-JSON).',
-          hint: rawText.slice(0, 200)
-        },
-        502
-      )
+      return jsonResponse({ error: 'Resposta inválida do Anthropic.', raw: rawText }, 500)
     }
 
     if (!res.ok) {
       return jsonResponse(
-        {
-          error: data?.error?.message || 'Erro na API do Anthropic.',
-          details: data
-        },
+        { error: data?.error?.message || 'Erro na API do Anthropic.', details: data },
         res.status
       )
     }
 
-    const text: string =
+    const text =
       data?.content
-        ?.filter((b: { type: string }) => b.type === 'text')
-        .map((b: { text: string }) => b.text)
+        ?.filter((b) => b.type === 'text')
+        .map((b) => b.text)
         .join('\n') || ''
-
-    if (!text) {
-      return jsonResponse(
-        {
-          error: 'Anthropic respondeu mas sem bloco de texto.',
-          details: data
-        },
-        500
-      )
-    }
 
     return jsonResponse({ text }, 200)
 
-  } catch (error: unknown) {
-    const err = error as Error
-    console.error('Erro interno em /api/trends:', err)
-    return jsonResponse({ error: err?.message || 'Erro interno.' }, 500)
+  } catch (error) {
+    return jsonResponse({ error: error?.message || 'Erro interno.' }, 500)
   }
 }
 
