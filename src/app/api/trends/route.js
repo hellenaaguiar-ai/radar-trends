@@ -8,11 +8,13 @@ TEMAS ÂNCORA: Bastidores reais de negócio, construção de identidade feminina
 
 AUDIÊNCIA: Mulher 25-35 anos, empreendedora ou em transição séria. Generalista com síndrome da impostora mesmo tendo resultado. Quer espelho, não tutorial.
 
-TOM: Direto, reflexivo, honesto sobre o caos. Nunca paternalista. Intelectualmente provocador.
+TOM: Direto, reflexivo, honesto e opinativo. Nunca paternalista. Intelectualmente provocador.
 
 NÃO PERTENCE À MARCA: motivacional genérico, tutorial passo-a-passo sem perspectiva própria, política, fitness, emagrecimento, relacionamento romântico, positividade tóxica.`
 
-const SEARCH_PROMPT = `Pesquise na internet quais são os temas, tendências e conversas mais relevantes no Brasil AGORA para uma criadora de conteúdo no nicho de empreendedorismo feminino, identidade, mercado digital e IA. Use web search para encontrar assuntos em discussão — LinkedIn, Instagram, YouTube, podcasts, notícias de negócio.
+const SEARCH_PROMPT = `Pesquise na internet quais são os temas, tendências e conversas mais relevantes no Brasil AGORA para uma criadora de conteúdo no nicho de empreendedorismo feminino, identidade, mercado digital e IA.
+
+Use web search para encontrar assuntos em discussão em LinkedIn, Instagram, YouTube, podcasts e notícias de negócio.
 
 Depois de pesquisar, analise cada tema pelo filtro da marca da Hellena e retorne EXATAMENTE neste formato para cada tema:
 
@@ -36,19 +38,76 @@ Fit com a marca: [Alta / Média / Baixa]
 Formato recomendado: [Vídeo longo / Reel / Vídeo longo + Reel / Post reflexivo]
 Timing: [Urgente / Evergreen / Evitar]`
 
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8'
+    }
+  })
+}
+
 export async function POST(req) {
   try {
     const apiKey = process.env.ANTHROPIC_API_KEY
 
+    console.log('ANTHROPIC_API_KEY exists?', !!apiKey)
+
     if (!apiKey) {
-      return Response.json(
+      return jsonResponse(
         { error: 'ANTHROPIC_API_KEY não configurada.' },
-        { status: 500 }
+        500
       )
     }
 
-    const { mode, topic } = await req.json()
-    const userMsg = mode === 'custom' ? CUSTOM_PROMPT(topic) : SEARCH_PROMPT
+    let requestBody
+
+    try {
+      requestBody = await req.json()
+    } catch {
+      return jsonResponse(
+        { error: 'Body inválido. Envie JSON válido.' },
+        400
+      )
+    }
+
+    const { mode, topic } = requestBody || {}
+
+    if (!mode) {
+      return jsonResponse(
+        { error: 'Parâmetro "mode" é obrigatório.' },
+        400
+      )
+    }
+
+    if (mode === 'custom' && !topic?.trim()) {
+      return jsonResponse(
+        { error: 'Parâmetro "topic" é obrigatório no modo custom.' },
+        400
+      )
+    }
+
+    const userMsg = mode === 'custom'
+      ? CUSTOM_PROMPT(topic.trim())
+      : SEARCH_PROMPT
+
+    const anthropicPayload = {
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 1200,
+      system: BRAND_SYSTEM,
+      tools: [
+        {
+          type: 'web_search_20250305',
+          name: 'web_search'
+        }
+      ],
+      messages: [
+        {
+          role: 'user',
+          content: userMsg
+        }
+      ]
+    }
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -57,16 +116,11 @@ export async function POST(req) {
         'x-api-key': apiKey,
         'anthropic-version': '2023-06-01'
       },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        system: BRAND_SYSTEM,
-        tools: [{ type: 'web_search_20250305', name: 'web_search' }],
-        messages: [{ role: 'user', content: userMsg }]
-      })
+      body: JSON.stringify(anthropicPayload)
     })
 
     const rawText = await res.text()
+
     console.log('Anthropic status:', res.status)
     console.log('Anthropic raw response:', rawText)
 
@@ -74,40 +128,59 @@ export async function POST(req) {
     try {
       data = JSON.parse(rawText)
     } catch {
-      return Response.json(
+      return jsonResponse(
         {
           error: 'Resposta inválida do Anthropic.',
           raw: rawText
         },
-        { status: 500 }
+        500
       )
     }
 
     if (!res.ok) {
-      return Response.json(
+      return jsonResponse(
         {
-          error: data?.error?.message || 'Erro ao consultar Anthropic.',
+          error: data?.error?.message || 'Erro ao consultar o Anthropic.',
           details: data
         },
-        { status: res.status }
+        res.status
       )
     }
 
     const text =
-      data.content
+      data?.content
         ?.filter((block) => block.type === 'text')
         .map((block) => block.text)
-        .join('') || ''
+        .join('\n') || ''
 
-    return Response.json({ text })
+    if (!text) {
+      return jsonResponse(
+        {
+          error: 'A resposta do Anthropic veio sem conteúdo de texto.',
+          details: data
+        },
+        500
+      )
+    }
+
+    return jsonResponse({ text }, 200)
   } catch (error) {
-    console.error('Erro interno /api/trends:', error)
+    console.error('Erro interno em /api/trends:', error)
 
-    return Response.json(
+    return jsonResponse(
       {
-        error: error?.message || 'Erro interno ao analisar trends.'
+        error: error?.message || 'Erro interno ao buscar trends.'
       },
-      { status: 500 }
+      500
     )
   }
+}
+
+export async function GET() {
+  return jsonResponse(
+    {
+      error: 'Method not allowed. Use POST.'
+    },
+    405
+  )
 }
